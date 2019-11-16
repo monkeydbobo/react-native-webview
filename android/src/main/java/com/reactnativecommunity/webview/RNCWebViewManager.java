@@ -16,6 +16,7 @@ import android.os.Environment;
 import androidx.annotation.RequiresApi;
 import androidx.core.content.ContextCompat;
 import android.text.TextUtils;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -68,6 +69,7 @@ import com.reactnativecommunity.webview.events.TopShouldStartLoadWithRequestEven
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -106,6 +108,7 @@ import javax.annotation.Nullable;
 @ReactModule(name = RNCWebViewManager.REACT_CLASS)
 public class RNCWebViewManager extends SimpleViewManager<WebView> {
 
+  private static final String RNCWebViewManager = "RNCWebViewManager";
   public static String activeUrl = null;
   public static final int COMMAND_GO_BACK = 1;
   public static final int COMMAND_GO_FORWARD = 2;
@@ -115,12 +118,6 @@ public class RNCWebViewManager extends SimpleViewManager<WebView> {
   public static final int COMMAND_INJECT_JAVASCRIPT = 6;
   public static final int COMMAND_LOAD_URL = 7;
   public static final int COMMAND_FOCUS = 8;
-
-  // android commands
-  public static final int COMMAND_CLEAR_FORM_DATA = 1000;
-  public static final int COMMAND_CLEAR_CACHE = 1001;
-  public static final int COMMAND_CLEAR_HISTORY = 1002;
-
   protected static final String REACT_CLASS = "RNCWebView";
   protected static final String HTML_ENCODING = "UTF-8";
   protected static final String HTML_MIME_TYPE = "text/html";
@@ -272,7 +269,7 @@ public class RNCWebViewManager extends SimpleViewManager<WebView> {
         break;
       case "LOAD_CACHE_ELSE_NETWORK":
         cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK;
-        break;
+        break;  
       case "LOAD_NO_CACHE":
         cacheMode = WebSettings.LOAD_NO_CACHE;
         break;
@@ -532,7 +529,7 @@ public class RNCWebViewManager extends SimpleViewManager<WebView> {
   @Override
   protected void addEventEmitters(ThemedReactContext reactContext, WebView view) {
     // Do not register default touch emitter and let WebView implementation handle touches
-    view.setWebViewClient(new RNCWebViewClient());
+    view.setWebViewClient(new RNCWebViewClient(null));
   }
 
   @Override
@@ -551,19 +548,17 @@ public class RNCWebViewManager extends SimpleViewManager<WebView> {
   @Override
   public @Nullable
   Map<String, Integer> getCommandsMap() {
-    return MapBuilder.<String, Integer>builder()
-      .put("goBack", COMMAND_GO_BACK)
-      .put("goForward", COMMAND_GO_FORWARD)
-      .put("reload", COMMAND_RELOAD)
-      .put("stopLoading", COMMAND_STOP_LOADING)
-      .put("postMessage", COMMAND_POST_MESSAGE)
-      .put("injectJavaScript", COMMAND_INJECT_JAVASCRIPT)
-      .put("loadUrl", COMMAND_LOAD_URL)
-      .put("requestFocus", COMMAND_FOCUS)
-      .put("clearFormData", COMMAND_CLEAR_FORM_DATA)
-      .put("clearCache", COMMAND_CLEAR_CACHE)
-      .put("clearHistory", COMMAND_CLEAR_HISTORY)
-      .build();
+    Map map = MapBuilder.of(
+      "goBack", COMMAND_GO_BACK,
+      "goForward", COMMAND_GO_FORWARD,
+      "reload", COMMAND_RELOAD,
+      "stopLoading", COMMAND_STOP_LOADING,
+      "postMessage", COMMAND_POST_MESSAGE,
+      "injectJavaScript", COMMAND_INJECT_JAVASCRIPT,
+      "loadUrl", COMMAND_LOAD_URL
+    );
+    map.put("requestFocus", COMMAND_FOCUS);
+    return map;
   }
 
   @Override
@@ -613,16 +608,6 @@ public class RNCWebViewManager extends SimpleViewManager<WebView> {
         break;
       case COMMAND_FOCUS:
         root.requestFocus();
-        break;
-      case COMMAND_CLEAR_FORM_DATA:
-        root.clearFormData();
-        break;
-      case COMMAND_CLEAR_CACHE:
-        boolean includeDiskFiles = args != null && args.getBoolean(0);
-        root.clearCache(includeDiskFiles);
-        break;
-      case COMMAND_CLEAR_HISTORY:
-        root.clearHistory();
         break;
     }
   }
@@ -701,9 +686,16 @@ public class RNCWebViewManager extends SimpleViewManager<WebView> {
 
   protected static class RNCWebViewClient extends WebViewClient {
 
+    private final String TAG = "RNCWebViewClient";
+    private final WebViewClient delegate;
     protected boolean mLastLoadFailed = false;
     protected @Nullable
     ReadableArray mUrlPrefixesForDefaultIntent;
+
+
+    public RNCWebViewClient(WebViewClient delegate) {
+      this.delegate = delegate;
+    }
 
     @Override
     public void onPageFinished(WebView webView, String url) {
@@ -717,6 +709,54 @@ public class RNCWebViewManager extends SimpleViewManager<WebView> {
         emitFinishEvent(webView, url);
       }
     }
+
+    @TargetApi(Build.VERSION_CODES.LOLLIPOP)
+    @Override
+    public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+      Log.d("RNCWebViewClient", request.getUrl().toString());
+      final String url = request.getUrl().toString();
+      WebResourceResponse resourceResponse = getWebResourceResponse(url);
+      if (resourceResponse == null) {
+        Log.d("RNCWebViewClient", "request from remote , " + url);
+        return super.shouldInterceptRequest(view, url);
+      }
+      Log.d("RNCWebViewClient", "request from local , " + url);
+      return resourceResponse;
+    }
+
+
+    /**
+     * 获取资源
+     *
+     * @param url 资源地址
+     */
+    private WebResourceResponse getWebResourceResponse(String url) {
+      WebResourceResponse resourceResponse = com.hht.webpackagekit.PackageManager.getInstance().getResource(url);
+      return resourceResponse;
+    }
+    /*
+    private WebResourceResponse getWebResourceResponse(String url) {
+
+      String localUrl = CommonConstant.resourceMap.get(url);
+      InputStream inputStream = getClass().getResourceAsStream("/assets/package/"+localUrl);
+      if (inputStream == null) {
+        Log.d(TAG,"RNCWebview_WebResourceResponse "+localUrl);
+        return null;
+      }
+      //高版本安卓返回资源的同时需要在响应头设置Access-Control相关字段
+      WebResourceResponse response;
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+        Map<String, String> header = new HashMap<>(2);
+        header.put("Access-Control-Allow-Origin", "*");
+        header.put("Access-Control-Allow-Headers", "Content-Type");
+        response = new WebResourceResponse("application/x-javascript", "UTF-8", 200, "ok", header, inputStream);
+      } else {
+        response = new WebResourceResponse("application/x-javascript", "UTF-8", inputStream);
+      }
+      return response;
+
+    }
+    */
 
     @Override
     public void onPageStarted(WebView webView, String url, Bitmap favicon) {
